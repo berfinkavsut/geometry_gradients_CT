@@ -1,5 +1,8 @@
 from numba import cuda
+
 import numpy as np
+import cv2
+
 
 
 @cuda.jit
@@ -114,3 +117,80 @@ def params_2_proj_matrix(angles, dsd, dsi, tx, ty, det_spacing, det_origin):
     matrices = matrices / matrices[:, 1, 2][:, np.newaxis, np.newaxis]
 
     return matrices, extrinsics, intrinsics
+
+def filter_ramlak(sinogram):
+    """
+    Filter a given sinogram using a ramp filter in Fourier space.
+    """
+
+    Nproj, Npix = np.shape(sinogram)
+
+    # Generate basic ramp filter (hint: there is the function np.fft.fftfreq.
+    # Try it and see what it does. Watch out for a possible fftshift)
+    ramp_filter = np.abs(np.fft.fftfreq(Npix))
+
+    # filter the sinogram in Fourier space in detector pixel direction
+    # Use the np.fft.fft along the axis=1
+    sino_ft = np.fft.fft(sinogram, axis=1)
+
+    # Multiply the ramp filter onto the 1D-FT of the sinogram and transform it
+    # back into spatial domain
+    sino_filtered = np.fft.ifft(sino_ft*ramp_filter, axis=1).real
+
+    return sino_filtered
+
+def decompose_projection_matrix(P):
+    # Decompose the projection matrix
+    K, R, t, _, _, _, _ = cv2.decomposeProjectionMatrix(P)
+    
+    # Convert t from homogeneous coordinates to 3x1 vector
+    t = t[:3] / t[3]
+    
+    return K, R, t
+
+def read_projection_matrix_from_file(file_path, frames):
+    
+    proj_matrices = [] 
+
+    with open(file_path, 'r') as file:
+
+        for i in range(frames):
+
+            values = []
+            for j in range(3):            
+                line = file.readline().strip()
+                
+                # Convert the line to a list of floats
+                values_ = list(map(float, line.split()))
+                values.extend(values_)
+            
+            # Convert the list to a 3x4 matrix
+            P = np.array(values).reshape(3, 4)
+            proj_matrices.append(P)
+
+
+    return np.asarray(proj_matrices)
+
+def convert_3d_proj_to_2d_proj(K, R, t):
+    K_2d = np.zeros(shape=(2,2))
+    K_2d[0,0]= K[0,0]
+    K_2d[0,1]= K[0,2]
+    K_2d[1,0]= K[2,0]
+    K_2d[1,1]= K[2,2]
+    
+    t_2d = t[:2]
+    R_2d = np.eye(2)
+    return K_2d, R_2d, t_2d
+
+def get_projection_matrices_2d(path, frames):
+    proj_matrices = read_projection_matrix_from_file(path, frames)
+    print(proj_matrices.shape)
+    proj_matrices_2d = [] 
+
+    for i in range(400):     
+        K, R, t = decompose_projection_matrix(proj_matrices[i, :, :])
+        K_, R_, t_ = convert_3d_proj_to_2d_proj(K, R, t)
+        P_ = K_ @ np.hstack((R_, t_.reshape(2,1)))
+        proj_matrices_2d.append(P_)
+
+    return np.array(proj_matrices_2d)
